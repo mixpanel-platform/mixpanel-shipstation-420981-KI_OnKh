@@ -5,11 +5,527 @@
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
+    <style type="text/css">
+    body {
+        color: #5c617b;
+        font-weight: normal;
+    }
+    .label {
+        font-weight: bold;
+        font-size: 15px;
+        margin-right: 8px;
+        display: inline-block;
+    }
+    .description {
+        font-size: 13px;
+        padding: 10px;
+    }
+    input {
+        font-size: 13px;
+        color: #747d94;
+        background-color: white;
+        height: 20px;
+        width: 300px;
+        margin-right: 15px;
+        padding: 5px;
+        border: 1px solid #bdc7d2;
+        -webkit-border-radius: 3px;
+        -moz-border-radius: 3px;
+        border-radius: 3px;
+        position: relative;
+        display: inline-block;
+    }
+    input:focus, input:hover {
+        outline: 0;
+        border-color: #5ba7e1;
+    }
+    #path_length {
+        width: 40px;
+    }
+    #run {
+        clear: both;
+        cursor: pointer;
+        color: #fff;
+        text-shadow: 0 -1px 0 rgba(0,0,0,0.2);
+        font-weight: bold;
+        text-transform: uppercase;
+        background-color: #61adf0;
+        background-image: -webkit-linear-gradient(#6ab5f2,#53a0ee);
+        background-image: -moz-linear-gradient(#6ab5f2,#53a0ee);
+        background-image: linear-gradient(#6ab5f2,#53a0ee);
+        box-shadow: inset 0 1px 1px #77bdf4,0 2px 2px -1px rgba(0,0,0,0.2);
+        padding: 6px 12px;
+        border: 1px solid #4d93d7;
+        -webkit-border-radius: 3px;
+        -moz-border-radius: 3px;
+        border-radius: 3px;
+        vertical-align: 1px;
+        display: inline-block;
+    }
+    #dates {
+        margin-right: 20px;
+        vertical-align: middle;
+        display: inline-block;
+    }
+    .events {
+        display: inline-block;
+    }
+    #report {
+        margin: 20px 0 55px;
+    }
+    .header {
+        font-size: 15px;
+        font-weight: bold;
+        text-shadow: 0 1px 0 rgba(255,255,255,0.7);
+        padding: 10px 0;
+    }
+    #path {
+        background-color: white;
+        border: 1px solid #bfcfda;
+        -webkit-border-radius: 5px;
+        -moz-border-radius: 5px;
+        border-radius: 5px;
+    }
+    #path svg {
+        display: none;
+    }
+    </style>
   </head>
   <body class="mixpanel-platform-body">
-    <h1>Hello, World!</h1>
+    <div class="mixpanel-platform-section">
+        <div id="dates"></div>
+        <div class="events">
+            <div class="label">Funnel Steps:</div>
+            <input id="event_list" value="App Install,Game Played,In-App Purchase">
+            <div class="label">Alt Path Length:</div>
+            <input id="path_length" value="3">
+            <div id="run">RUN</div>
+        </div>
+        <div id="graph"></div>
+    </div>
+    <div class="mixpanel-platform-section flow">
+        <div class="header">Alternative Paths</div>
+        <div id="path">
+            <div class="description">Click the "dropped" section of any of the above events to view paths those users took after completing the previous funnel step (i.e., what the users did when they didn't convert).</div>
+        </div>
+    </div>
     <script>
-      // Run queries and display results here
+    // Set a global variable for the Custom Query result
+    var cqResult;
+
+    // We'll need to convert dates to strings to include them in our query
+    function date_to_string(d) {
+        return d.toISOString().split('T')[0];
+    }
+
+    var datepicker = $('#dates').MPDatepicker();
+    var event_list_input;
+    var path_length_input;
+    var graph = $('#graph').MPChart({
+        // chart options
+        chartType: 'bar',
+        stacked: true,
+        highchartsOptions: {
+            colors: ['#cccccc', '#65afe7'],
+            plotOptions: {
+                series: {
+                    cursor: 'pointer',
+                    point: {
+                        events: {
+                            click: function () {
+                                if (this.series_name == 'dropped') {
+                                    // enable clicking on the dropoff portion of the funnel bar to see the alternative paths for users
+                                    var clicked_event = this.category;
+                                    var index = event_list_input.indexOf(clicked_event);
+                                    // show dropoff paths originating from the previous event
+                                    // we'll define this function later
+                                    mapFlow(index-1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    function runQuery() {
+        event_list_input = $('#event_list').val().split(',');
+        path_length_input = $('#path_length').val();
+        if (isNaN(parseInt(path_length_input))) {
+            alert('Error: Alternative path length must be a number');
+            return;
+        }
+
+        var dates = datepicker.val();
+
+        // clear previous query
+        $('#path svg').hide();
+
+        // grab the Custom Query script as a string
+        var script = $('#cq').html();
+        // trim all extra whitespace using jQuery trim
+        script = $.trim(script);
+        // grab the parameters from the inputs we defined
+        var queryParams = {
+            from_date: date_to_string(dates.from),
+            to_date: date_to_string(dates.to),
+            event_list: event_list_input,
+            path_length: path_length_input
+        };
+        
+        MP.api.custom_query(script, queryParams).done(function(results) {
+            cqResult = results[0];
+            var funnel = generateFunnel(cqResult);
+            // add data to the chart we set up previously
+            graph.MPChart('setData', funnel);
+        });
+    }
+
+    $(document).ready(function() {
+      runQuery();
+    });
+    $('#dates').on('change', function() {
+      runQuery();
+    });
+    $('#run').on('click', function() {
+      runQuery();
+    });
+
+    // D3 tree setup
+    var margin = {top: 20, right: 40, bottom: 20, left: 40},
+        width = 960 - margin.right - margin.left,
+        height = 920 - margin.top - margin.bottom;
+
+    var i = 0,
+        duration = 750,
+        treeRoot;
+
+    var tree = d3.layout.tree()
+        .size([height, width]);
+
+    var diagonal = d3.svg.diagonal()
+        .projection(function(d) { return [d.y, d.x]; });
+
+    var svg = d3.select("#path").append("svg")
+        .attr("width", width + margin.right + margin.left)
+        .attr("height", height + margin.top + margin.bottom)
+        .append("g")
+        .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+    d3.select(self.frameElement).style("height", "800px");
+
+    function createFlow(flowObject) {
+        treeRoot = flowObject;
+
+        // initialize path flow with the root event
+        treeRoot.x0 = height / 2;
+        treeRoot.y0 = 0;
+
+        function collapse(d) {
+            if (d.children) {
+                d._children = d.children;
+                d._children.forEach(collapse);
+                d.children = null;
+            }
+        }
+
+        treeRoot.children.forEach(collapse);
+        update(treeRoot);      
+        $('#path svg').show();
+    }
+
+    function update(source) {
+        // Update the tree from a source node
+
+        var flow_length = 4;
+        // Compute the new tree layout
+        var nodes = tree.nodes(treeRoot).reverse(),
+            links = tree.links(nodes);
+
+        // Normalize for fixed-depth
+        nodes.forEach(function(d) { d.y = 850 / flow_length * d.depth; });
+        
+        // Find max count
+        var maxCount = 0;
+        nodes.forEach(function(d) { if (d.depth > source.depth) maxCount = d.count > maxCount ? d.count : maxCount; });
+
+        var ratio = calculateFlowLine(maxCount);
+
+        // Update the nodes
+        var node = svg.selectAll("g.node")
+            .data(nodes, function(d) { return d.id || (d.id = ++i); });
+
+        // Enter any new nodes at the parent's previous position
+        var nodeEnter = node.enter().append("g")
+            .attr("class", function(d) {return d.parent ? "node" : "root node"; })
+            .attr("transform", function(d) { return "translate(" + source.y0 + "," + source.x0 + ")"; })
+            .style("-webkit-clip-path", "polygon(-3px 0, " + 750/flow_length + "px 0, " + 750/flow_length + "px 100%, -3px 100%")
+            .style("clip-path", "polygon(-3px 0, " + 750/flow_length + "px 0, " + 750/flow_length + "px 100%, -3px 100%")
+            .style("cursor", "pointer")
+            .on("click", click);
+
+        nodeEnter.append("circle")
+            .attr("r", 1e-6)
+            .style("stroke", "steelblue")
+            .style("stroke-width", "1.5px")
+            .style("fill", function(d) { return d.children ? "#fff" : "lightsteelblue"; });
+
+        nodeEnter.append("text")
+            .attr("dx", 10)
+            .attr("dy", 3)
+            .attr("text-anchor", "start")
+            .text(function(d) { return d.name; })
+            .style("fill-opacity", 1e-6)
+            .style("font", "10px sans-serif")
+            .style("text-overflow", "ellipsis")
+            .style("overflow", "hidden")
+            .style("white-space", "nowrap");
+                
+        nodeEnter.append("title")
+            .text(function(d) { return d.name; });
+
+        // Transition nodes to their new position
+        var nodeUpdate = node.transition()
+            .duration(duration)
+            .attr("transform", function(d) { return "translate(" + d.y + "," + d.x + ")"; });
+
+        nodeUpdate.select("circle")
+            .attr("r", 4.5)
+            .style("fill", function(d) { return d.children ? "#fff" : "lightsteelblue"; });
+
+        nodeUpdate.select("text")
+            .style("fill-opacity", 1)
+            .style("font-weight", function(d) {return d.children ? "bold" : "normal"; });
+
+        // Transition exiting nodes to the parent's new position
+        var nodeExit = node.exit().transition()
+            .duration(duration)
+            .attr("transform", function(d) { return "translate(" + source.y + "," + source.x + ")"; })
+            .remove();
+
+        nodeExit.select("circle")
+            .attr("r", 1e-6);
+
+        nodeExit.select("text")
+            .style("fill-opacity", 1e-6);
+
+        // Update the links
+        var link = svg.selectAll("path.link")
+            .data(links, function(d) { return d.target.id; });
+
+        // Enter any new links at the parent's previous position
+        link.enter().insert("path", "g")
+            .attr("class", "link")
+            .style("stroke-width", function(d) { 
+                var width = d.target.count * ratio > 1 ? d.target.count * ratio : 1;
+                return width;
+            })
+            .style("fill", "none")
+            .style("stroke", "#ccc")
+            .style("stroke-linecap", "round")
+            .attr("d", function(d) {
+                var o = {x: source.x0, y: source.y0};
+                return diagonal({source: o, target: o});
+            });
+
+        // Transition links to their new position
+        link.transition()
+            .duration(duration)
+            .attr("d", diagonal);
+
+        // Transition exiting nodes to the parent's new position
+        link.exit().transition()
+            .duration(duration)
+            .attr("d", function(d) {
+                var o = {x: source.x, y: source.y};
+                return diagonal({source: o, target: o});
+            })
+            .remove();
+
+        // Stash the old positions for transition
+        nodes.forEach(function(d) {
+            d.x0 = d.x;
+            d.y0 = d.y;
+        });
+    }
+
+    function click(d) {
+        // Toggle children on click
+        if (d.children) {
+            d._children = d.children;
+            d.children = null;
+        } else {
+            d.children = d._children;
+            d._children = null;
+        }
+        update(d);
+    }
+
+    function calculateFlowLine(count) {
+        // Calculate a ratio normalize width of path links
+        count = count || 1;
+        return 15/count;
+    }
+
+    function generateFunnel(results) {
+        var funnel = {
+            dropped: {},
+            converted: {}
+        };
+        _.each(results, function(funnel_step, i) {
+            // loop through each of the event objects in the Custom Query result
+            // assign the total count to the "converted" object in our funnel object
+            funnel.converted[funnel_step.step] = funnel_step.count;
+            // if there is a preceding event in the funnel, assign the difference between the preceding and current step to the "dropped" object
+            funnel.dropped[funnel_step.step] = results[i-1] ? results[i-1].count - funnel_step.count : 0;
+        });
+
+        return funnel;
+    }
+
+    function getChildren(parentObject, flowParent, prevFlowParent, event) {
+        // loop through our result to get the children of each event and add them to the applicable parent
+        var eventObject = {
+            'name': flowParent.count + ': ' + event,
+            'count': flowParent.count,
+            'parent': prevFlowParent,
+            'children': []
+        };
+
+        // find the next events completed in a path after the parent event
+        var next = flowParent.next;        
+        if ($.isEmptyObject(next) === false) {
+            // continue to get the next events in the path
+            for (var eventName in next) {
+                if (next.hasOwnProperty(eventName)) {
+                    getChildren(eventObject, next[eventName], event, eventName);
+                }
+            }
+        }
+        // add all next events as children of the parent event
+        parentObject.children.push(eventObject);
+    }
+
+    function mapFlow(index) {
+        // create the object to be passed into the D3 visualization
+        var flows = cqResult[index];
+        var root = event_list_input[index];
+        var flowObject = {
+          'name': flows.count + ': ' + root,
+          'count': flows.count,
+          'children': [],
+        };
+        
+        _.each(_.keys(flows.next), function(eventName) {
+          getChildren(flowObject, flows.next[eventName], '', eventName);
+        });
+        createFlow(flowObject);
+    }
+    </script>
+    <script type="text/cq" id="cq">
+    var EVENT_LIST = params.event_list || ['App Install', 'Game Played', 'In-App Purchase'];
+    var PATH_LENGTH =  params.path_length || 3;
+    
+    function main() {
+        return Events({
+            from_date: params.from_date,
+            to_date: params.to_date
+        })
+        .groupByUser(function(state, events) {
+            // collect the funnel step and drop-off event path for each user, if they entered the funnel
+            // use the current user state if events have already been analyzed for that user, or initialize user state
+            state = state || {
+                current_step: -1,
+                exit_path: []
+            };
+            _.each(events, function(e) {
+                // loop through each event in the current event batch
+                if (e.name == EVENT_LIST[state.current_step + 1]) {
+                    // if the event name matches the next event in the funnel
+                    // reset the dropoff path (because they did not drop off if they converted to this event)
+                    // and move current step forward
+                    state.exit_path = [];
+                    state.current_step += 1;
+                } else if (state.exit_path.length < PATH_LENGTH) {
+                    // record the n events after the last converted event
+                    state.exit_path.push(e.name);
+                }
+            });
+    
+            return state;
+        })
+        .filter(function(item) {
+            // filter out users who did not enter the funnel
+            return item.value.current_step > -1;
+        })
+        .reduce(function(previous_outputs, user_states) {
+            // aggregate total users at each step in the funnel and
+            // most common exit paths after dropping out of the funnel
+    
+            // initialize our output object for each event in the funnel
+            var output = [];
+            _.each(EVENT_LIST, function(e) {
+                output.push({ step: e, count: 0, next: {} });
+            });
+    
+            _.each(user_states, function(state) {
+                // loop through each user object
+                state = state.value;
+                // include the user in the count for each step of the funnel they completed
+                var step = 0;
+                while (step < state.current_step) {
+                    output[step].count++;
+                    step++;
+                }
+                if (step != state.current_step) { throw "you got a bug"; }
+    
+                output[step].count++;
+                var flow = output[step].next;
+                _.each(state.exit_path, function(e) {
+                    // loop through each event in the user's exit path, and
+                    // add the event to an existing path or create a new one
+                    flow[e] = flow[e] || { count: 0, next: {}};
+                    flow[e].count++;
+                    flow = flow[e].next;
+                });
+            });
+    
+            _.each(previous_outputs, function(previous_output) {
+                // merge our previous output object with the one from this batch of user objects
+                merge(output, previous_output);
+            });
+    
+            return output;
+        });
+    }
+    
+    function recursiveSumMerge(d1, d2) {
+        for (var key in d2) {
+            if (d2.hasOwnProperty(key)) {
+                var v1 = d1[key],
+                    v2 = d2[key];
+    
+                if (!(key in d1)) {
+                    d1[key] = v2;
+                } else if (typeof v1 === "number" && typeof v2 === "number") {
+                    d1[key] += v2;
+                } else if (typeof v1 === "object" && typeof v2 === "object") {
+                    recursiveSumMerge(v1, v2);
+                } else {
+                    throw "mismatched types for key: " + key;
+                }
+            }
+        }
+    }
+    
+    function merge(output1, output2) {
+        for (var i = 0; i < output2.length; i++) {
+            output1[i].count += output2[i].count;
+            recursiveSumMerge(output1[i].next, output2[i].next);
+        }
+    }    
     </script>
   </body>
 </html>
